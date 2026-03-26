@@ -1,0 +1,148 @@
+name: lureness-typebot
+
+services:
+  postgres:
+    container_name: lureness-typebot-postgres
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${TYPEBOT_POSTGRES_DB:-typebot}
+      POSTGRES_USER: ${TYPEBOT_POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${TYPEBOT_POSTGRES_PASSWORD:-123456789}
+    ports:
+      - "${TYPEBOT_POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - typebot_postgres_data:/var/lib/postgresql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${TYPEBOT_POSTGRES_USER:-postgres} -d ${TYPEBOT_POSTGRES_DB:-typebot}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+    networks:
+      - typebot-network
+
+  mailpit:
+    container_name: lureness-typebot-mailpit
+    image: axllent/mailpit
+    restart: unless-stopped
+    ports:
+      - "${TYPEBOT_MAIL_SMTP_PORT:-11025}:1025"
+      - "${TYPEBOT_MAIL_UI_PORT:-18025}:8025"
+    networks:
+      - typebot-network
+
+  minio:
+    container_name: lureness-typebot-minio
+    image: minio/minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${TYPEBOT_MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${TYPEBOT_MINIO_ROOT_PASSWORD:-minio123}
+    ports:
+      - "${TYPEBOT_MINIO_API_PORT:-19000}:9000"
+      - "${TYPEBOT_MINIO_CONSOLE_PORT:-19001}:9001"
+    volumes:
+      - typebot_minio_data:/data
+    networks:
+      - typebot-network
+
+  createbuckets:
+    container_name: lureness-typebot-createbuckets
+    image: minio/mc
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      sleep 10;
+      /usr/bin/mc alias set minio http://minio:9000 ${TYPEBOT_MINIO_ROOT_USER:-minio} ${TYPEBOT_MINIO_ROOT_PASSWORD:-minio123};
+      /usr/bin/mc mb --ignore-existing minio/${TYPEBOT_S3_BUCKET:-typebot};
+      /usr/bin/mc anonymous set public minio/${TYPEBOT_S3_BUCKET:-typebot}/public;
+      exit 0;
+      "
+    networks:
+      - typebot-network
+
+  builder:
+    container_name: lureness-typebot-builder
+    image: baptistearno/typebot-builder:${TYPEBOT_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+      minio:
+        condition: service_started
+      createbuckets:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${TYPEBOT_BUILDER_PORT:-18080}:3000"
+    environment:
+      DATABASE_URL: postgresql://${TYPEBOT_POSTGRES_USER:-postgres}:${TYPEBOT_POSTGRES_PASSWORD:-123456789}@postgres:5432/${TYPEBOT_POSTGRES_DB:-typebot}
+      ENCRYPTION_SECRET: ${TYPEBOT_ENCRYPTION_SECRET:-typebot-local-secret-key-32-char}
+      NEXTAUTH_URL: ${TYPEBOT_BUILDER_URL:-http://localhost:18080}
+      NEXT_PUBLIC_VIEWER_URL: ${TYPEBOT_VIEWER_URL:-http://localhost:18081}
+      ADMIN_EMAIL: ${TYPEBOT_ADMIN_EMAIL:-admin@lureness.local}
+      DEFAULT_WORKSPACE_PLAN: ${TYPEBOT_DEFAULT_WORKSPACE_PLAN:-UNLIMITED}
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      SMTP_IGNORE_TLS: ${TYPEBOT_SMTP_IGNORE_TLS:-true}
+      SMTP_AUTH_DISABLED: ${TYPEBOT_SMTP_AUTH_DISABLED:-false}
+      NEXT_PUBLIC_SMTP_FROM: ${TYPEBOT_SMTP_FROM:-Lureness Typebot <no-reply@lureness.local>}
+      S3_ACCESS_KEY: ${TYPEBOT_MINIO_ROOT_USER:-minio}
+      S3_SECRET_KEY: ${TYPEBOT_MINIO_ROOT_PASSWORD:-minio123}
+      S3_BUCKET: ${TYPEBOT_S3_BUCKET:-typebot}
+      S3_ENDPOINT: minio
+      S3_PORT: 9000
+      S3_SSL: "false"
+      S3_REGION: ${TYPEBOT_S3_REGION:-us-east-1}
+    networks:
+      - typebot-network
+
+  viewer:
+    container_name: lureness-typebot-viewer
+    image: baptistearno/typebot-viewer:${TYPEBOT_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      createbuckets:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${TYPEBOT_VIEWER_PORT:-18081}:3000"
+    environment:
+      DATABASE_URL: postgresql://${TYPEBOT_POSTGRES_USER:-postgres}:${TYPEBOT_POSTGRES_PASSWORD:-123456789}@postgres:5432/${TYPEBOT_POSTGRES_DB:-typebot}
+      ENCRYPTION_SECRET: ${TYPEBOT_ENCRYPTION_SECRET:-typebot-local-secret-key-32-char}
+      NEXTAUTH_URL: ${TYPEBOT_BUILDER_URL:-http://localhost:18080}
+      NEXT_PUBLIC_VIEWER_URL: ${TYPEBOT_VIEWER_URL:-http://localhost:18081}
+      S3_ACCESS_KEY: ${TYPEBOT_MINIO_ROOT_USER:-minio}
+      S3_SECRET_KEY: ${TYPEBOT_MINIO_ROOT_PASSWORD:-minio123}
+      S3_BUCKET: ${TYPEBOT_S3_BUCKET:-typebot}
+      S3_ENDPOINT: minio
+      S3_PORT: 9000
+      S3_SSL: "false"
+      S3_REGION: ${TYPEBOT_S3_REGION:-us-east-1}
+    networks:
+      - typebot-network
+
+volumes:
+  typebot_postgres_data:
+  typebot_minio_data:
+
+networks:
+  typebot-network:
+    driver: bridge
