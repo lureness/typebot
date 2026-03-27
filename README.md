@@ -73,8 +73,10 @@ Agora o repositório inclui uma estrutura pronta para deploy em serviços separa
 - `railway/builder`
 - `railway/viewer`
 - `railway/minio`
+- `railway/minio-bootstrap`
 
 Cada diretório contém `Dockerfile` e `railway.toml` próprios, para você apontar o `Root Directory` de cada serviço no painel da Railway. O passo a passo e o mapeamento de variáveis estão em `railway/README.md`.
+No caso do `minio`, o deploy da Railway foi simplificado para expor apenas a API S3. O bootstrap do bucket foi separado no serviço `railway/minio-bootstrap`, usando a imagem `minio/mc`. O console web continua sendo algo de ambiente local ou de um serviço separado.
 
 ## Observações
 
